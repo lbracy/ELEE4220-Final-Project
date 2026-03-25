@@ -3943,7 +3943,7 @@
 				)
 			)
 		)
-		(property "Value" "15k"
+		(property "Value" "6.8k"
 			(at 184.15 127 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4070,16 +4070,16 @@
 			(uuid "93767d7a-a919-4ae0-8012-ef48974a11f7")
 		)
 		(pin "6"
-			(uuid "f7fbd6d9-ea48-4aef-b54d-0e655926b260")
+			(uuid "f7fbd6d9-ea48-4aef-b54d-0e655926b261")
 		)
 		(pin "7"
-			(uuid "96b3cad5-23dc-4c3d-8da8-74bc45a8ca18")
+			(uuid "96b3cad5-23dc-4c3d-8da8-74bc45a8ca19")
 		)
 		(pin "8"
-			(uuid "00b68369-ead3-4ce8-8685-9e1ea0d8c912")
+			(uuid "00b68369-ead3-4ce8-8685-9e1ea0d8c913")
 		)
 		(pin "4"
-			(uuid "09371e79-06ac-4ce0-a1c6-35d8a474255c")
+			(uuid "09371e79-06ac-4ce0-a1c6-35d8a474255d")
 		)
 		(pin "1"
 			(uuid "c0e1fa14-d8f1-40b4-b91f-99c8a47d3038")
@@ -4088,7 +4088,7 @@
 			(uuid "598259f7-8907-4b7e-94ae-52e580183cb4")
 		)
 		(pin "5"
-			(uuid "e4758b37-b43f-46e7-91a8-eae46ffcbeae")
+			(uuid "e4758b37-b43f-46e7-91a8-eae46ffcbeaf")
 		)
 		(instances
 			(project "MagneticLevitator"
@@ -5408,16 +5408,16 @@
 			(uuid "a3cf0edc-c40e-4b12-93b7-2aa4b38d13da")
 		)
 		(pin "6"
-			(uuid "f7fbd6d9-ea48-4aef-b54d-0e655926b260")
+			(uuid "f7fbd6d9-ea48-4aef-b54d-0e655926b262")
 		)
 		(pin "7"
-			(uuid "96b3cad5-23dc-4c3d-8da8-74bc45a8ca18")
+			(uuid "96b3cad5-23dc-4c3d-8da8-74bc45a8ca1a")
 		)
 		(pin "8"
-			(uuid "00b68369-ead3-4ce8-8685-9e1ea0d8c912")
+			(uuid "00b68369-ead3-4ce8-8685-9e1ea0d8c914")
 		)
 		(pin "4"
-			(uuid "09371e79-06ac-4ce0-a1c6-35d8a474255c")
+			(uuid "09371e79-06ac-4ce0-a1c6-35d8a474255e")
 		)
 		(pin "1"
 			(uuid "b4a20650-e5f1-41e8-9986-6fe7cc61b6e8")
@@ -5426,7 +5426,7 @@
 			(uuid "08f9a993-8699-4f22-bd73-b2e0565b6331")
 		)
 		(pin "5"
-			(uuid "e4758b37-b43f-46e7-91a8-eae46ffcbeae")
+			(uuid "e4758b37-b43f-46e7-91a8-eae46ffcbeb0")
 		)
 		(instances
 			(project "MagneticLevitator"
