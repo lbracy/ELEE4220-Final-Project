@@ -1,4 +1,13 @@
-# Prerequisites
+
+*.asv
+*.m~
+*.req~
+
+# Compiled MEX files (Mac specific)
+*.mexmaci64
+
+# macOS folder attributes
+.DS_Store# Prerequisites
 *.d
 
 # Compiled Object files
