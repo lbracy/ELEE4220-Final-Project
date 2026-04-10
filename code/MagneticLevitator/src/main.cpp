@@ -27,19 +27,19 @@ void loop() {
   delay(100); 
 
   // pwm stuff
-  for (int percent = 10; percent <= 100; percent += 10) {
-    int duty = (percent * 255) / 100;   // convert percent to 8-bit duty
+  // for (int percent = 10; percent <= 100; percent += 10) {
+  //   int duty = (percent * 255) / 100;   // convert percent to 8-bit duty
 
-    analogWrite(PWM_PIN, duty);
-    Serial.print("PWM Percent: ");
-    Serial.print(percent);
-    Serial.print("% | Duty: ");
-    Serial.println(duty);
+  //   analogWrite(PWM_PIN, 255);
+  //   Serial.print("PWM Percent: ");
+  //   Serial.print(percent);
+  //   Serial.print("% | Duty: ");
+  //   Serial.println(duty);
 
-    delay(1000);
-  }
+  //   delay(1000);
+  // }
   Serial.println("Ramp complete. Turning PWM off.");
-  analogWrite(PWM_PIN, 0);
+  analogWrite(PWM_PIN, 255);
   delay(3000);
 }
 
