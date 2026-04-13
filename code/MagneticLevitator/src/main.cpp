@@ -8,15 +8,15 @@
 // ---------------- OUTER LOOP GAINS (Position / Maglev) ----
 #define Kp_outer 0.1f    // Spring
 #define Ki_outer 0.0000f // Gap closer (KEEP THIS TINY)
-#define Kd_outer 0.0000f // Shock absorber
-#define B_TARGET -400.0f // Your ideal hover point
+#define Kd_outer 0.0009f // Shock absorber
+#define B_TARGET -375.0f // Your ideal hover point
 
 // ---------------- INNER LOOP GAINS (Current) --------------
 #define Kp_inner 0.57f
 #define Ki_inner 723.53f
 
 // ---------------- System Limits ---------------------------
-#define MAX_CURRENT 0.6f  // Keep below L298N max
+#define MAX_CURRENT 2.0f  // Keep below L298N max
 #define MIN_CURRENT 0.0f  // Hard floor because IN2 is grounded
 #define FEED_FORWARD_CURRENT 0.2f // Baseline current to fight gravity
 
@@ -127,7 +127,7 @@ float pid_controller_outer(float b_meas, float b_target) {
 
 // ---------------------------------------------------
 float calibrateZeroCurrentVoltage() {
-  const int numSamples = 500;
+  const int numSamples = 250;
   long sum = 0;
   Serial.println("=== ACS712 Calibration ===");
   delay(1000);
@@ -143,7 +143,7 @@ float calibrateZeroCurrentVoltage() {
 }
 
 float calibrateHallZeroVoltage() {
-  const int numSamples = 500;
+  const int numSamples = 250;
   long sum = 0;
   Serial.println("=== Hall Calibration ===");
   delay(1000);
@@ -228,17 +228,17 @@ void loop() {
 
     // Outer Loop Health
     Serial.print("B_Tgt:"); Serial.print(B_TARGET, 1);  Serial.print(",");
-    Serial.print("B_Ms:");  Serial.print(B_gauss, 1);   Serial.print(",");
-    Serial.print("Err:");   Serial.print(position_error, 1); Serial.print(",");
+    Serial.print(" | B_Ms:");  Serial.print(B_gauss, 1);   Serial.print(",");
+    Serial.print(" | Err:");   Serial.print(position_error, 1); Serial.print(",");
     
     // PID Contributions
-    Serial.print("P:"); Serial.print(outer_p_term, 3); Serial.print(",");
-    Serial.print("I:"); Serial.print(outer_i_term, 3); Serial.print(",");
-    Serial.print("D:"); Serial.print(outer_d_term, 3); Serial.print(",");
+    Serial.print(" | P:"); Serial.print(outer_p_term, 3); Serial.print(",");
+    Serial.print(" | I:"); Serial.print(outer_i_term, 3); Serial.print(",");
+    Serial.print(" | D:"); Serial.print(outer_d_term, 3); Serial.print(",");
 
     // Inner Loop Health
-    Serial.print("iRef:"); Serial.print(i_ref, 3);  Serial.print(",");
-    Serial.print("iMs:");  Serial.print(i_meas, 3); Serial.print(",");
-    Serial.print("PWM%:"); Serial.println(pct, 1);
+    Serial.print(" | iRef:"); Serial.print(i_ref, 3);  Serial.print(",");
+    Serial.print(" | iMs:");  Serial.print(i_meas, 3); Serial.print(",");
+    Serial.print(" | PWM%:"); Serial.println(pct, 1);
   }
 }
