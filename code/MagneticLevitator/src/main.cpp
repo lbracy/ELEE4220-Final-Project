@@ -6,17 +6,17 @@
 #define PWM_PIN    10   // Connected to L298N IN1 (IN2 is grounded)
 
 // ---------------- OUTER LOOP GAINS (Position / Maglev) ----
-#define Kp_outer 0.1f    // Spring
-#define Ki_outer 0.0000f // Gap closer (KEEP THIS TINY)
-#define Kd_outer 0.0009f // Shock absorber
-#define B_TARGET -375.0f // Your ideal hover point
+#define Kp_outer 0.003f    // Spring
+#define Ki_outer 0.00001f // Gap closer (KEEP THIS TINY)
+#define Kd_outer 0.0023f // Shock absorber
+#define B_TARGET -450.0f // Your ideal hover point
 
 // ---------------- INNER LOOP GAINS (Current) --------------
 #define Kp_inner 0.57f
 #define Ki_inner 723.53f
 
 // ---------------- System Limits ---------------------------
-#define MAX_CURRENT 2.0f  // Keep below L298N max
+#define MAX_CURRENT 0.6f  // Keep below L298N max
 #define MIN_CURRENT 0.0f  // Hard floor because IN2 is grounded
 #define FEED_FORWARD_CURRENT 0.2f // Baseline current to fight gravity
 
