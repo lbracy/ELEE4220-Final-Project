@@ -12,9 +12,9 @@
 #define Kd_outer 0.0009f 
 #define B_TARGET -272.0f
 */
-#define Kp_outer 0.004f      // Low P to prevent "launching"
+#define Kp_outer 0.003f      // Low P to prevent "launching"
 #define Ki_outer 0.00001f
-#define Kd_outer 0.001f      // High D to provide "friction"
+#define Kd_outer 0.0004f      // High D to provide "friction"
 #define B_TARGET -270.0f     // Further away for more reaction time
 
 // ---------------- INNER LOOP GAINS (Current) --------------
@@ -24,7 +24,7 @@
 // ---------------- System Limits ---------------------------
 #define MAX_CURRENT 1.0f
 #define MIN_CURRENT 0.0f
-#define FEED_FORWARD_CURRENT 0.35f
+#define FEED_FORWARD_CURRENT 0.2f
 
 // ---------------- Sensor Parameters -----------------------
 #define ACS_SENSITIVITY  0.066f
@@ -32,8 +32,8 @@
 #define HALL_SENSITIVITY_V_PER_GAUSS 0.0014f
 
 // ---------------- Filters ---------------------------------
-#define CURRENT_ALPHA 0.05f
-#define HALL_ALPHA    0.85f
+#define CURRENT_ALPHA 0.85f
+#define HALL_ALPHA    0.5f
 
 // ---------------- Timing ----------------------------------
 #define CURRENT_SAMPLE_US  100    // 10 kHz inner loop
@@ -81,11 +81,7 @@ float readHallVoltage() {
 int pi_controller_inner(float i, float i_ref_val) {
   static float integral_i = 0.0f;
   const float dt = 0.0001f;  // 100 µs loop
-  // // If the outer loop wants zero current, wipe the memory of the inner loop
-  // if (i_ref_val <= 0.001f) {
-  //   integral_i = 0;
-  //   return 0;
-  // }
+
   float error = i_ref_val - i;
   integral_i += error * dt;
 
@@ -110,6 +106,7 @@ float pid_controller_outer(float b_meas, float b_target) {
   static float integral_outer = 0.0f;
   const float dt = 0.0003f; //0.001f; // 1 ms loop
 
+  // position_error = b_meas - b_target;
   position_error = b_meas - b_target;
 
   integral_outer += position_error * dt;
@@ -286,18 +283,19 @@ void loop() {
     printTimer = 0;
     
     float pct = duty / 255.0f * 100.0f;
-    /*
+    
     /* plotting for serial_logger.py */ 
-    Serial.print(B_TARGET, 1);   Serial.print(",");
-    Serial.print(B_gauss, 1);    Serial.print(",");
-    Serial.print(position_error, 1); Serial.print(",");
-    Serial.print(outer_p_term, 3);   Serial.print(",");
-    Serial.print(outer_i_term, 3);   Serial.print(",");
-    Serial.print(outer_d_term, 3);   Serial.print(",");
-    Serial.print(i_ref, 3);      Serial.print(",");
-    Serial.print(i_meas, 3);     Serial.print(",");
-    Serial.println(pct, 1);
-    */
+    
+    // Serial.print(B_TARGET, 1);   Serial.print(",");
+    // Serial.print(B_gauss, 1);    Serial.print(",");
+    // Serial.print(position_error, 1); Serial.print(",");
+    // Serial.print(outer_p_term, 3);   Serial.print(",");
+    // Serial.print(outer_i_term, 3);   Serial.print(",");
+    // Serial.print(outer_d_term, 3);   Serial.print(",");
+    // Serial.print(i_ref, 3);      Serial.print(",");
+    // Serial.print(i_meas, 3);     Serial.print(",");
+    // Serial.println(pct, 1);
+    
     Serial.print("B_Tgt:"); Serial.print(B_TARGET, 1);  Serial.print(",");
     Serial.print(" | B_Ms:");  Serial.print(B_gauss, 1);   Serial.print(",");
     Serial.print(" | Err:");   Serial.print(position_error, 1); Serial.print(",");
