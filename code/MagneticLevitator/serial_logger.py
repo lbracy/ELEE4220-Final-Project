@@ -1,184 +1,230 @@
+#!/usr/bin/env python3
 """
-ESP32 Serial Logger + Excel Plotter
-------------------------------------
-Reads CSV serial output from the ESP32, prints live to terminal,
-and saves to CSV + Excel with charts on Ctrl+C.
+Maglev controller — live plotter + data logger
+------------------------------------------------
+Shows real-time plots while running.
+On Ctrl-C: saves maglev_log_YYYYMMDD_HHMMSS.csv + .xlsx with charts.
 
-Expected CSV format from ESP32:
-    duty,i_ref_A,i_meas_A,B_gauss
-    128,0.400,0.398,123.4
+Install deps:
+    pip3 install pyserial matplotlib openpyxl
 
-Usage:
-    pip install pyserial openpyxl
-    python serial_logger.py
+Expected CSV columns from Teensy (no header, 9 values per line):
+    B_target, B_meas, Error, P, I, D, iRef, iMeas, PWM%
 """
 
-import csv
+import sys
+import glob
 import time
+import csv
+import threading
+import collections
 from datetime import datetime
 
 import serial
-import serial.tools.list_ports
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 from openpyxl import Workbook
 from openpyxl.chart import LineChart, Reference
 
-BAUD   = 115200
-HEADER = ["duty", "i_ref_A", "i_meas_A", "B_gauss"]
+# ── Config ────────────────────────────────────────────────────────────────────
+BAUD     = 115200
+HISTORY  = 500      # samples visible on screen at once
+INTERVAL = 50       # plot refresh ms (~20 fps)
 
+COLS = ["B_target", "B_meas", "Error", "P", "I", "D", "iRef", "iMeas", "PWM%"]
+NUM_COLS = len(COLS)
 
-# ─────────────────────────── port detection ───────────────────────────
+COLORS = {
+    "B_target": "#888",
+    "B_meas":   "#E24B4A",
+    "Error":    "#EF9F27",
+    "P":        "#378ADD",
+    "I":        "#1D9E75",
+    "D":        "#D4537E",
+    "iRef":     "#7F77DD",
+    "iMeas":    "#D85A30",
+    "PWM%":     "#639922",
+}
+
+GROUPS = [
+    ("Position (Gauss)", [0, 1, 2], ["B_target", "B_meas", "Error"]),
+    ("PID terms",        [3, 4, 5], ["P", "I", "D"]),
+    ("Current (A)",      [6, 7],    ["iRef", "iMeas"]),
+    ("PWM duty (%)",     [8],       ["PWM%"]),
+]
+
+# ── Auto-detect serial port ───────────────────────────────────────────────────
 def find_port():
-    ports = list(serial.tools.list_ports.comports())
-    if not ports:
-        raise RuntimeError("No serial ports found. Plug in your ESP32 and try again.")
-    for p in ports:
-        desc = (p.description or "").lower()
-        if any(kw in desc for kw in ["cp210", "ch340", "uart", "usb serial"]):
-            return p.device
-    return ports[0].device
+    candidates = (
+        glob.glob("/dev/ttyACM*") +
+        glob.glob("/dev/ttyUSB*") +
+        glob.glob("/dev/cu.usbmodem*") +
+        glob.glob("/dev/cu.usbserial*") +
+        glob.glob("COM[0-9]*")
+    )
+    if not candidates:
+        print("ERROR: No serial ports found. Plug in the Teensy and retry.")
+        sys.exit(1)
+    if len(candidates) == 1:
+        print(f"Using port: {candidates[0]}")
+        return candidates[0]
+    print("Multiple ports found:")
+    for i, p in enumerate(candidates):
+        print(f"  [{i}] {p}")
+    choice = input("Select port number: ").strip()
+    return candidates[int(choice)]
 
+# ── Shared state ──────────────────────────────────────────────────────────────
+buffers  = [collections.deque([0.0] * HISTORY, maxlen=HISTORY) for _ in COLS]
+all_rows = []           # full history: [time_s, B_target, B_meas, ...]
+lock     = threading.Lock()
+running  = True
+start_t  = time.time()
 
-# ─────────────────────────── save functions ───────────────────────────
+# ── Serial reader thread ──────────────────────────────────────────────────────
+def reader(port):
+    global running
+    try:
+        ser = serial.Serial(port, BAUD, timeout=1)
+    except serial.SerialException as e:
+        print(f"Cannot open {port}: {e}")
+        running = False
+        return
+
+    print("Connected. Waiting for data...")
+    while running:
+        try:
+            line = ser.readline().decode("ascii", errors="ignore").strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            if len(parts) != NUM_COLS:
+                print(f"  [Teensy] {line}")
+                continue
+            values = [float(p) for p in parts]
+            elapsed = round(time.time() - start_t, 4)
+            with lock:
+                for buf, val in zip(buffers, values):
+                    buf.append(val)
+                all_rows.append([elapsed] + values)
+        except (ValueError, serial.SerialException):
+            continue
+    ser.close()
+
+# ── Save CSV ──────────────────────────────────────────────────────────────────
 def save_csv(rows, path):
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["time_s", "duty", "i_ref_A", "i_meas_A", "B_gauss"])
+        writer.writerow(["time_s"] + COLS)
         writer.writerows(rows)
-    print(f"\nCSV saved  → {path}")
+    print(f"CSV saved   -> {path}")
 
-
+# ── Save Excel ────────────────────────────────────────────────────────────────
 def save_xlsx(rows, path):
     wb = Workbook()
     ws = wb.active
     ws.title = "Data"
-
-    ws.append(["time_s", "duty", "i_ref_A", "i_meas_A", "B_gauss"])
+    ws.append(["time_s"] + COLS)
     for row in rows:
         ws.append(row)
 
     n = len(rows)
     if n < 2:
-        print("Not enough data for charts.")
         wb.save(path)
+        print("Not enough data for charts.")
         return
 
     time_ref = Reference(ws, min_col=1, min_row=2, max_row=n + 1)
 
-    # Chart 1: Current
-    chart_i = LineChart()
-    chart_i.title        = "Current vs Time"
-    chart_i.style        = 10
-    chart_i.y_axis.title = "Current (A)"
-    chart_i.x_axis.title = "Time (s)"
-    chart_i.width        = 20
-    chart_i.height       = 12
-    chart_i.add_data(Reference(ws, min_col=3, min_row=1, max_row=n + 1), titles_from_data=True)
-    chart_i.add_data(Reference(ws, min_col=4, min_row=1, max_row=n + 1), titles_from_data=True)
-    chart_i.set_categories(time_ref)
-    chart_i.series[0].graphicalProperties.line.solidFill = "FF0000"  # i_ref  = red
-    chart_i.series[1].graphicalProperties.line.solidFill = "0070C0"  # i_meas = blue
-    ws.add_chart(chart_i, "G2")
+    def make_chart(title, y_title, col_indices, colors, anchor):
+        chart = LineChart()
+        chart.title        = title
+        chart.style        = 10
+        chart.y_axis.title = y_title
+        chart.x_axis.title = "Time (s)"
+        chart.width        = 22
+        chart.height       = 12
+        for col_idx, color in zip(col_indices, colors):
+            # col_idx is 0-based into COLS; +2 because col 1 = time_s
+            data_ref = Reference(ws, min_col=col_idx + 2, min_row=1, max_row=n + 1)
+            chart.add_data(data_ref, titles_from_data=True)
+            chart.series[-1].graphicalProperties.line.solidFill = color
+        chart.set_categories(time_ref)
+        ws.add_chart(chart, anchor)
 
-    # Chart 2: Magnetic field
-    chart_b = LineChart()
-    chart_b.title        = "Magnetic Field vs Time"
-    chart_b.style        = 10
-    chart_b.y_axis.title = "B (Gauss)"
-    chart_b.x_axis.title = "Time (s)"
-    chart_b.width        = 20
-    chart_b.height       = 12
-    chart_b.add_data(Reference(ws, min_col=5, min_row=1, max_row=n + 1), titles_from_data=True)
-    chart_b.set_categories(time_ref)
-    chart_b.series[0].graphicalProperties.line.solidFill = "00B050"  # green
-    ws.add_chart(chart_b, "G26")
-
-    # Chart 3: PWM duty
-    chart_d = LineChart()
-    chart_d.title        = "PWM Duty vs Time"
-    chart_d.style        = 10
-    chart_d.y_axis.title = "Duty (0-255)"
-    chart_d.x_axis.title = "Time (s)"
-    chart_d.width        = 20
-    chart_d.height       = 12
-    chart_d.add_data(Reference(ws, min_col=2, min_row=1, max_row=n + 1), titles_from_data=True)
-    chart_d.set_categories(time_ref)
-    chart_d.series[0].graphicalProperties.line.solidFill = "7030A0"  # purple
-    ws.add_chart(chart_d, "G50")
+    make_chart("Position (Gauss)", "B (Gauss)",
+               [0, 1, 2], ["888888", "E24B4A", "EF9F27"], "K2")
+    make_chart("PID terms", "Value",
+               [3, 4, 5], ["378ADD", "1D9E75", "D4537E"], "K26")
+    make_chart("Current (A)", "A",
+               [6, 7], ["7F77DD", "D85A30"], "K50")
+    make_chart("PWM duty (%)", "Duty (0-255 scaled %)",
+               [8], ["639922"], "K74")
 
     wb.save(path)
-    print(f"Excel saved → {path}")
+    print(f"Excel saved -> {path}")
 
+# ── Live plot setup ───────────────────────────────────────────────────────────
+fig, axes = plt.subplots(len(GROUPS), 1, figsize=(12, 9), sharex=True)
+fig.canvas.manager.set_window_title("Maglev controller telemetry")
+fig.patch.set_facecolor("#1a1a1a")
+x_data = list(range(HISTORY))
 
-# ─────────────────────────── main ───────────────────────────
-def main():
+subplot_lines = []
+for ax, (title, idxs, labels) in zip(axes, GROUPS):
+    ax.set_facecolor("#111")
+    ax.set_ylabel(title, color="#aaa", fontsize=9)
+    ax.tick_params(colors="#666")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#333")
+    lines = []
+    for idx, lbl in zip(idxs, labels):
+        ln, = ax.plot(x_data, list(buffers[idx]),
+                      label=lbl, color=COLORS[lbl], linewidth=1.2)
+        lines.append((ln, idx))
+    ax.legend(loc="upper left", fontsize=8, framealpha=0.3,
+              labelcolor="white", facecolor="#222")
+    subplot_lines.append((ax, lines))
+
+axes[-1].set_xlabel("samples", color="#aaa", fontsize=9)
+plt.tight_layout(rect=[0, 0, 1, 0.97])
+fig.suptitle("Maglev telemetry  |  Ctrl-C to stop and save", color="#ccc", fontsize=10)
+
+def update(_frame):
+    with lock:
+        snapshot = [list(b) for b in buffers]
+    for ax, lines in subplot_lines:
+        for ln, idx in lines:
+            ln.set_ydata(snapshot[idx])
+        ax.relim()
+        ax.autoscale_view(scalex=False)
+    return [ln for _, lines in subplot_lines for ln, _ in lines]
+
+ani = animation.FuncAnimation(fig, update, interval=INTERVAL, blit=True,
+                               cache_frame_data=False)
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
     port = find_port()
-    timestamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_base = f"esp32_log_{timestamp}"
-    csv_path    = output_base + ".csv"
-    xlsx_path   = output_base + ".xlsx"
+    t = threading.Thread(target=reader, args=(port,), daemon=True)
+    t.start()
 
-    print(f"  Port  : {port}")
-    print(f"  Baud  : {BAUD}")
-    print(f"  Output: {output_base}.[csv/xlsx]")
-    print("\nLogging... press Ctrl+C to stop and save.\n")
+    try:
+        plt.show()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        running = False
 
-    rows         = []
-    header_found = False
-    start        = time.time()
+    with lock:
+        rows_snapshot = list(all_rows)
 
-    with serial.Serial(port, BAUD, timeout=1) as ser:
-        time.sleep(2)             # wait for ESP32 boot + calibration
-        ser.reset_input_buffer()
+    print(f"\nStopped. Captured {len(rows_snapshot)} samples.")
 
-        try:
-            while True:
-                raw = ser.readline()
-                if not raw:
-                    continue
-
-                line = raw.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-
-                parts = line.split(",")
-
-                # confirm header once, then skip it
-                if parts == HEADER:
-                    if not header_found:
-                        print(f"  Header detected: {line}\n")
-                        header_found = True
-                    continue
-
-                # pass through any non-data lines (calibration output etc.)
-                if len(parts) != len(HEADER):
-                    print(f"  [ESP32] {line}")
-                    continue
-
-                try:
-                    duty    = int(parts[0])
-                    i_ref   = float(parts[1])
-                    i_meas  = float(parts[2])
-                    b_gauss = float(parts[3])
-                except ValueError:
-                    continue
-
-                elapsed = round(time.time() - start, 3)
-                rows.append([elapsed, duty, i_ref, i_meas, b_gauss])
-
-                print(f"  t={elapsed:7.3f}s | duty={duty:3d} | "
-                      f"I_ref={i_ref:.3f}A | I_meas={i_meas:.3f}A | B={b_gauss:.1f}G")
-
-        except KeyboardInterrupt:
-            pass   # fall through to save
-
-    print(f"\nStopped. Captured {len(rows)} samples.")
-
-    if rows:
-        save_csv(rows, csv_path)
-        save_xlsx(rows, xlsx_path)
+    if rows_snapshot:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = f"maglev_log_{ts}"
+        save_csv(rows_snapshot,  base + ".csv")
+        save_xlsx(rows_snapshot, base + ".xlsx")
     else:
         print("No data captured — nothing saved.")
-
-
-if __name__ == "__main__":
-    main()
