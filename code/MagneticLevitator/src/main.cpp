@@ -12,14 +12,14 @@
 #define Kd_outer 0.0009f 
 #define B_TARGET -272.0f
 */
-#define Kp_outer 0.003f      // Low P to prevent "launching"
-#define Ki_outer 0.00001f
+#define Kp_outer 0.008f      // Low P to prevent "launching"
+#define Ki_outer 0.0007f
 #define Kd_outer 0.0004f      // High D to provide "friction"
-#define B_TARGET -270.0f     // Further away for more reaction time
+#define B_TARGET -260.0f     // Further away for more reaction time
 
 // ---------------- INNER LOOP GAINS (Current) --------------
 #define Kp_inner 0.57f
-#define Ki_inner 250.0f //723.53f
+#define Ki_inner 50.0f // 250.0f //723.53f
 
 // ---------------- System Limits ---------------------------
 #define MAX_CURRENT 1.0f
@@ -37,7 +37,7 @@
 
 // ---------------- Timing ----------------------------------
 #define CURRENT_SAMPLE_US  100    // 10 kHz inner loop
-#define HALL_SAMPLE_US     300 // 1000   // 1 kHz outer loop
+#define HALL_SAMPLE_US     200 // 1000   // 1 kHz outer loop
 #define PRINT_US           20000   // 50 Hz telemetry
 #define ARM_DELAY_MS       1000   // wait after user turns on supply
 
@@ -61,9 +61,14 @@ float outer_p_term = 0.0f;
 float outer_i_term = 0.0f;
 float outer_d_term = 0.0f;
 float position_error = 0.0f;
+// Inner Loop  ---
+float inner_p_term = 0.0f;
+float inner_i_term = 0.0f;
+float inner_integral_i = 0.0f; 
 
 // ---------------- Arm State -------------------------------
 bool systemArmed = false;
+bool isOvershot = false; // NEW: Global state for safety mode
 
 // ---------------------------------------------------
 float readACSVoltage() {
@@ -78,6 +83,32 @@ float readHallVoltage() {
 }
 
 // ---------------- INNER LOOP (PI) --------------------------
+// --- Update the Inner Loop Controller ---
+int pi_controller_inner(float i, float i_ref_val) {
+// --- NEW: Hard Reset Logic ---
+  if (isOvershot && i_ref_val <= 0.001f) {
+    inner_integral_i = 0; // Kill the "memory" immediately
+    inner_p_term = 0;
+    inner_i_term = 0;
+    return 0;             // PWM 0
+  }
+  const float dt = 0.0001f;
+  float error = i_ref_val - i;
+
+  inner_p_term = Kp_inner * error;
+  float potential_u = inner_p_term + (Ki_inner * inner_integral_i);
+
+  // Anti-windup logic
+  if (!((potential_u >= 255.0f && error > 0) || (potential_u <= 0.0f && error < 0))) {
+    inner_integral_i += error * dt;
+  }
+
+  inner_i_term = Ki_inner * inner_integral_i;
+  float u = inner_p_term + inner_i_term;
+  
+  return (int)constrain(u, 0, 255);
+}
+/*
 int pi_controller_inner(float i, float i_ref_val) {
   static float integral_i = 0.0f;
   const float dt = 0.0001f;  // 100 µs loop
@@ -99,12 +130,12 @@ int pi_controller_inner(float i, float i_ref_val) {
 
   return (int)u;
 }
-
+*/
 // ---------------- OUTER LOOP (PID) --------------------------
 float pid_controller_outer(float b_meas, float b_target) {
   static float last_error = 0.0f;
   static float integral_outer = 0.0f;
-  const float dt = 0.0003f; //0.001f; // 1 ms loop
+  const float dt = 0.0002f; //0.001f; // 1 ms loop
 
   // position_error = b_meas - b_target;
   position_error = b_meas - b_target;
@@ -275,7 +306,14 @@ void loop() {
     float delta = hall_voltage_filt - HALL_OFFSET;
     B_gauss = delta / HALL_SENSITIVITY_V_PER_GAUSS;
 
+    // Inside loop() under the 1kHz Hall Loop section
     i_ref = pid_controller_outer(B_gauss, B_TARGET);
+
+    // NEW: Safety Kill
+    if (B_gauss < B_TARGET) { 
+      // If we are closer to the coil than the target (-300 is closer than -260)
+      i_ref = 0; 
+    }
   }
 
   // -------- PRINT --------
@@ -284,24 +322,28 @@ void loop() {
     
     float pct = duty / 255.0f * 100.0f;
     
-    /* plotting for serial_logger.py */ 
-    
-    // Serial.print(B_TARGET, 1);   Serial.print(",");
-    // Serial.print(B_gauss, 1);    Serial.print(",");
+    // CSV Style ----- plotting for serial_logger.py
+    // Serial.print(B_TARGET, 1);       Serial.print(",");
+    // Serial.print(B_gauss, 1);        Serial.print(",");
     // Serial.print(position_error, 1); Serial.print(",");
     // Serial.print(outer_p_term, 3);   Serial.print(",");
     // Serial.print(outer_i_term, 3);   Serial.print(",");
     // Serial.print(outer_d_term, 3);   Serial.print(",");
-    // Serial.print(i_ref, 3);      Serial.print(",");
-    // Serial.print(i_meas, 3);     Serial.print(",");
+    // Serial.print(inner_p_term, 3);   Serial.print(","); // New
+    // Serial.print(inner_i_term, 3);   Serial.print(","); // New
+    // Serial.print(i_ref, 3);          Serial.print(",");
+    // Serial.print(i_meas, 3);         Serial.print(",");
     // Serial.println(pct, 1);
     
+    // Human Readable Style 
     Serial.print("B_Tgt:"); Serial.print(B_TARGET, 1);  Serial.print(",");
     Serial.print(" | B_Ms:");  Serial.print(B_gauss, 1);   Serial.print(",");
     Serial.print(" | Err:");   Serial.print(position_error, 1); Serial.print(",");
     Serial.print(" | P:");     Serial.print(outer_p_term, 3); Serial.print(",");
     Serial.print(" | I:");     Serial.print(outer_i_term, 3); Serial.print(",");
     Serial.print(" | D:");     Serial.print(outer_d_term, 3); Serial.print(",");
+    Serial.print(" | iP:");    Serial.print(inner_p_term, 3); Serial.print(","); // New
+    Serial.print(" | iI:");    Serial.print(inner_i_term, 3); Serial.print(","); // New
     Serial.print(" | iRef:");  Serial.print(i_ref, 3);  Serial.print(",");
     Serial.print(" | iMs:");   Serial.print(i_meas, 3); Serial.print(",");
     Serial.print(" | PWM%:");  Serial.println(pct, 1);
