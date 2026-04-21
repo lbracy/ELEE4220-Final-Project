@@ -3,35 +3,35 @@
  * Ported from Teensy to ESP32 WROOM-32D
  *
  * Key hardware changes from original Teensy version:
- *  - L298N replaced by N-MOSFET (Q1) on PCB — PWM drives gate directly via R4 (1k)
- *  - ACS712 current sensor replaced by 0.1Ω shunt (R3) + LM324N op-amp (U2)
- *  - LM324N feedback resistor R6 changed from 6.8k → 39k
+ * - L298N replaced by N-MOSFET (Q1) on PCB — PWM drives gate directly via R4 (1k)
+ * - ACS712 current sensor replaced by 0.1Ω shunt (R3) + LM324N op-amp (U2)
+ * - LM324N feedback resistor R6 changed from 6.8k → 39k
  *
  * ---- ACS_SENSITIVITY recalculation ----
- *  The LM324N is wired as a non-inverting amplifier:
- *    Rin  = R4 = 1kΩ  (input resistor)
- *    Rf   = R6 = 39kΩ (feedback resistor — CHANGED)
- *    Gain = 1 + Rf/Rin = 1 + 39/1 = 40
+ * The LM324N is wired as a non-inverting amplifier:
+ * Rin  = R4 = 1kΩ  (input resistor)
+ * Rf   = R6 = 39kΩ (feedback resistor — CHANGED)
+ * Gain = 1 + Rf/Rin = 1 + 39/1 = 40
  *
- *  Effective sensitivity = R_shunt × Gain = 0.1Ω × 40 = 4.0 V/A
+ * Effective sensitivity = R_shunt × Gain = 0.1Ω × 40 = 4.0 V/A
  *
- *  NOTE: At MAX_CURRENT = 1.0A the op-amp output reaches 4.0V, which EXCEEDS
- *  the ESP32 ADC's 3.3V input limit. Either:
- *    (a) Reduce MAX_CURRENT to 0.80A  ← safe limit with 3.3V rail
- *    (b) Add a voltage divider after U2 output (e.g. 10k / 22k → ×0.69 → 2.76V/A)
- *        and update ACS_SENSITIVITY accordingly
- *  The code below uses option (a) with MAX_CURRENT = 0.80A as a safe default.
- *  Adjust once you have confirmed your hardware headroom.
+ * NOTE: At MAX_CURRENT = 1.0A the op-amp output reaches 4.0V, which EXCEEDS
+ * the ESP32 ADC's 3.3V input limit. Either:
+ * (a) Reduce MAX_CURRENT to 0.80A  ← safe limit with 3.3V rail
+ * (b) Add a voltage divider after U2 output (e.g. 10k / 22k → ×0.69 → 2.76V/A)
+ * and update ACS_SENSITIVITY accordingly
+ * The code below uses option (a) with MAX_CURRENT = 0.80A as a safe default.
+ * Adjust once you have confirmed your hardware headroom.
  *
  * ---- ESP32 ADC note ----
- *  Always use ADC1 pins (GPIO32–39). ADC2 cannot be used when WiFi is active.
- *  GPIO34 and GPIO35 are input-only — ideal for sensor inputs.
- *  The ESP32 ADC has known non-linearity near 0V and 3.3V; keep sensor
- *  mid-range for best accuracy.
+ * Always use ADC1 pins (GPIO32–39). ADC2 cannot be used when WiFi is active.
+ * GPIO34 and GPIO35 are input-only — ideal for sensor inputs.
+ * The ESP32 ADC has known non-linearity near 0V and 3.3V; keep sensor
+ * mid-range for best accuracy.
  *
  * ---- PWM note ----
- *  Uses the ESP32 LEDC peripheral via the Arduino-ESP32 3.x API (ledcAttach /
- *  ledcWrite). If you are on arduino-esp32 2.x, see the #ifdef block below.
+ * Uses the ESP32 LEDC peripheral via the Arduino-ESP32 3.x API (ledcAttach /
+ * ledcWrite). If you are on arduino-esp32 2.x, see the #ifdef block below.
  */
 
 #include <Arduino.h>
@@ -39,10 +39,10 @@
 // ======================================================================
 // PIN DEFINITIONS  (ESP32 WROOM-32D)
 // ======================================================================
-#define V_HALL    36    // ADC1_CH6  — Hall sensor breakout output
-#define CURR_PIN  39    // ADC1_CH7  — LM324N (U2) current-sense output
+#define V_HALL    0    // ADC1_CH6  — Hall sensor breakout output
+#define CURR_PIN  1    // ADC1_CH7  — LM324N (U2) current-sense output
 // PWM output to MOSFET gate (via R4 1kΩ gate resistor on PCB)
-#define PWM_PIN   25    // Any GPIO with output capability
+#define PWM_PIN   5    // Any GPIO with output capability
 
 // ======================================================================
 // LEDC PWM CONFIGURATION
@@ -53,24 +53,24 @@
 // ======================================================================
 // OUTER LOOP GAINS  (Position / Maglev PID)
 // ======================================================================
-#define Kp_outer 0.17f
-#define Ki_outer 0.01f
-#define Kd_outer 0.001f
-#define B_TARGET -125.0f    // Target field in Gauss
+#define Kp_outer 0.0001f
+#define Ki_outer 0.000001f
+#define Kd_outer 0.0000002f
+#define B_TARGET 520.0f    // POSITIVE Target field in Gauss
 
 // ======================================================================
 // INNER LOOP GAINS  (Current PI)
 // ======================================================================
 #define Kp_inner 0.57f
-#define Ki_inner 2133.3f
+#define Ki_inner 100.0f
 
 // ======================================================================
 // SYSTEM LIMITS
 // ======================================================================
 
-#define MAX_CURRENT         0.80f
+#define MAX_CURRENT         1.5f
 #define MIN_CURRENT         0.00f
-#define FEED_FORWARD_CURRENT 0.55f
+#define FEED_FORWARD_CURRENT 0.1f
 
 // ======================================================================
 // SENSOR PARAMETERS
@@ -99,7 +99,7 @@
 // ======================================================================
 #define CURRENT_SAMPLE_US   100     // 10 kHz inner loop
 #define HALL_SAMPLE_US      200     //  5 kHz outer loop
-#define PRINT_US            20000   // 50 Hz telemetry
+#define PRINT_US            80000  
 #define ARM_DELAY_MS        1000    // Pause after user arms system
 
 // ======================================================================
@@ -196,8 +196,9 @@ static float pid_controller_outer(float b_meas, float b_target) {
 
     const float dt = 0.0002f;   // 200 µs outer loop period
 
-    position_error   = b_meas - b_target;
-    integral_outer  += position_error * dt;
+    // --- POSITIVE GAUSS MATH ---
+    position_error  = b_target - b_meas;
+    integral_outer += position_error * dt;
 
     // Integrator clamp
     integral_outer = constrain(integral_outer, -500.0f, 500.0f);
@@ -382,9 +383,10 @@ void loop() {
 
         i_ref = pid_controller_outer(B_gauss, B_TARGET);
 
-        // Safety kill: if ball is closer to coil than target, cut current
-        // (more negative B_gauss = closer to coil)
-        if (B_gauss < B_TARGET - 80.0f) {
+        // --- POSITIVE SAFETY KILL ---
+        // If target is 85, and measured hits 165, it is too close to the coil.
+        // It must trip when it is GREATER than the target + 80.
+        if (B_gauss > B_TARGET + 80.0f) {
             isOvershot = true;
             i_ref = 0.0f;
         } else {
