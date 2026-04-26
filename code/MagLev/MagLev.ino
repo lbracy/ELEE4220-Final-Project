@@ -4,23 +4,26 @@
 #define HALL_PIN  2
 #define PWM_PIN   5
 
-#define PWM_FREQ_HZ     10000
+#define PWM_FREQ_HZ 10000
 
-#define Kp_inner  22.0f
-#define Ki_inner  52000.0f
+#define Kp_inner  100.0f
+#define Ki_inner  723.0f
 
-static float Kp_outer = 0.0f;
-static float Ki_outer = 0.0f;
-static float Kd_outer = 0.0f;
+static float Kp_outer = 0.34f;
+static float Ki_outer = 0.05f;
+static float Kd_outer = 0.02f;
 
-static float feed_forward = 0.4f;
+static float feed_forward = 0.30f;
 
-#define MAX_CURRENT         1.5f
+#define MAX_CURRENT         1.0f
 #define MIN_CURRENT         0.00f
 
 #define SHUNT_RESISTANCE    0.1f
 #define OPAMP_GAIN          40.0f
 #define ACS_SENSITIVITY     (SHUNT_RESISTANCE * OPAMP_GAIN)
+
+#define COIL_HALL_SLOPE     0.3568f
+#define COIL_HALL_OFFSET    1.9557f
 
 #define CURRENT_SAMPLE_US   100
 #define OUTER_SAMPLE_US     1000
@@ -33,11 +36,13 @@ static uint32_t printTimer   = 0;
 
 static bool systemArmed = false;
 
-static int   duty   = 0;
-static float i_ref  = 0.0f;
-static float i_meas = 0.0f;
+static int   duty        = 0;
+static float i_ref       = 0.0f;
+static float i_meas      = 0.0f;
+static float hall_raw    = 0.0f;
+static float hall_comp   = 0.0f;
 
-static float pos_ref_target = 2.15f;
+static float pos_ref_target = 2.1f;
 static float prev_pos_error = 0.0f;
 static float outer_integral = 0.0f;
 
@@ -69,6 +74,10 @@ static float readHallVoltage() {
     return (avgRaw / 4095.0f) * 3.3f;
 }
 
+static float compensateHall(float v_raw, float i) {
+    return v_raw - (COIL_HALL_SLOPE * i);
+}
+
 static void writePWM(int d) {
     analogWrite(PWM_PIN, constrain(d, 0, 255));
 }
@@ -76,24 +85,25 @@ static void writePWM(int d) {
 static void pid_controller_outer() {
     const float dt = OUTER_SAMPLE_US / 1000000.0f;
 
-    float raw_pos = readHallVoltage();
+    hall_raw = readHallVoltage();
+    hall_comp = compensateHall(hall_raw, i_meas);
 
     static float filtered_pos = -1.0f;
-    const float ALPHA = 0.15f;
+    const float ALPHA = 0.85f;
     if (filtered_pos < 0.0f) {
-        filtered_pos = raw_pos;
+        filtered_pos = hall_comp;
     }
-    filtered_pos = (ALPHA * raw_pos) + ((1.0f - ALPHA) * filtered_pos);
+    filtered_pos = (ALPHA * hall_comp) + ((1.0f - ALPHA) * filtered_pos);
     outer_pos_meas = filtered_pos;
 
     static float deriv_filtered = -1.0f;
     const float ALPHA_D = 0.05f;
     if (deriv_filtered < 0.0f) {
-        deriv_filtered = raw_pos;
+        deriv_filtered = hall_comp;
     }
-    deriv_filtered = (ALPHA_D * raw_pos) + ((1.0f - ALPHA_D) * deriv_filtered);
+    deriv_filtered = (ALPHA_D * hall_comp) + ((1.0f - ALPHA_D) * deriv_filtered);
 
-    outer_error = pos_ref_target - outer_pos_meas;
+    outer_error = outer_pos_meas - pos_ref_target;
 
     static bool first_run = true;
     if (first_run) {
@@ -103,17 +113,19 @@ static void pid_controller_outer() {
 
     outer_p_term = Kp_outer * outer_error;
 
-    outer_integral += outer_error * dt;
-    float max_i_windup = MAX_CURRENT / (Ki_outer > 0 ? Ki_outer : 1.0f);
-    outer_integral = constrain(outer_integral, -max_i_windup, max_i_windup);
-    outer_i_term = Ki_outer * outer_integral;
-
-    float deriv_error = pos_ref_target - deriv_filtered;
+    float deriv_error = deriv_filtered - pos_ref_target;
     outer_d_term = Kd_outer * (deriv_error - prev_pos_error) / dt;
     prev_pos_error = deriv_error;
 
-    float desired_i = outer_p_term + outer_i_term + outer_d_term + feed_forward;
+    float potential_i = outer_p_term + (Ki_outer * outer_integral) + outer_d_term + feed_forward;
 
+    if (!((potential_i >= MAX_CURRENT && outer_error > 0.0f) ||
+          (potential_i <= MIN_CURRENT && outer_error < 0.0f))) {
+        outer_integral += outer_error * dt;
+    }
+
+    outer_i_term = Ki_outer * outer_integral;
+    float desired_i = outer_p_term + outer_i_term + outer_d_term + feed_forward;
     i_ref = constrain(desired_i, MIN_CURRENT, MAX_CURRENT);
 }
 
@@ -252,6 +264,7 @@ void loop() {
                     Serial.println(Kd_outer, 6);
                 } else if (cmd == 'r' || cmd == 'R') {
                     pos_ref_target = val;
+                    outer_integral = 0.0f;
                     Serial.print("\n>> Target: ");
                     Serial.println(pos_ref_target, 4);
                 } else if (cmd == 'f' || cmd == 'F') {
@@ -266,13 +279,13 @@ void loop() {
 
         float pct = duty / 255.0f * 100.0f;
 
-        Serial.print(" | PosV:");  Serial.print(outer_pos_meas, 3); Serial.print(",");
-        Serial.print(" | Err:");   Serial.print(outer_error,    3); Serial.print(",");
-        Serial.print(" | oP:");    Serial.print(outer_p_term,   3); Serial.print(",");
-        Serial.print(" | oD:");    Serial.print(outer_d_term,   3); Serial.print(",");
-        Serial.print(" | iRef:");  Serial.print(i_ref,          3); Serial.print(",");
-        Serial.print(" | iMs:");   Serial.print(i_meas,         3); Serial.print(",");
-        Serial.print(" | FF:");    Serial.print(feed_forward,   3); Serial.print(",");
-        Serial.print(" | PWM%:");  Serial.println(pct,          1);
+        Serial.print(" | HallRaw:"); Serial.print(hall_raw,      3); Serial.print(",");
+        Serial.print(" | HallCmp:"); Serial.print(hall_comp,     3); Serial.print(",");
+        Serial.print(" | Err:");     Serial.print(outer_error,   3); Serial.print(",");
+        Serial.print(" | oP:");      Serial.print(outer_p_term,  3); Serial.print(",");
+        Serial.print(" | iRef:");    Serial.print(i_ref,         3); Serial.print(",");
+        Serial.print(" | iMs:");     Serial.print(i_meas,        3); Serial.print(",");
+        Serial.print(" | FF:");      Serial.print(feed_forward,  3); Serial.print(",");
+        Serial.print(" | PWM%:");    Serial.println(pct,         1);
     }
 }
