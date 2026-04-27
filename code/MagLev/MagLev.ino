@@ -6,14 +6,14 @@
 
 #define PWM_FREQ_HZ 10000
 
-#define Kp_inner  100.0f
-#define Ki_inner  723.0f
+#define Kp_inner  22.0f
+#define Ki_inner  52000.0f
 
-static float Kp_outer = 0.34f;
-static float Ki_outer = 0.05f;
-static float Kd_outer = 0.02f;
+static float Kp_outer = 10.0f;
+static float Ki_outer = 0.000f;
+static float Kd_outer = 0.08f;
 
-static float feed_forward = 0.30f;
+static float feed_forward = 0.3f;
 
 #define MAX_CURRENT         1.0f
 #define MIN_CURRENT         0.00f
@@ -22,10 +22,10 @@ static float feed_forward = 0.30f;
 #define OPAMP_GAIN          40.0f
 #define ACS_SENSITIVITY     (SHUNT_RESISTANCE * OPAMP_GAIN)
 
-#define COIL_HALL_SLOPE     0.3568f
-#define COIL_HALL_OFFSET    1.9557f
+#define COIL_HALL_SLOPE     0.0f
+#define COIL_HALL_OFFSET    0.0f
 
-#define CURRENT_SAMPLE_US   100
+#define CURRENT_SAMPLE_US   200
 #define OUTER_SAMPLE_US     1000
 #define PRINT_US            80000
 #define ARM_DELAY_MS        1000
@@ -39,10 +39,11 @@ static bool systemArmed = false;
 static int   duty        = 0;
 static float i_ref       = 0.0f;
 static float i_meas      = 0.0f;
+static float i_filt      = 0.0f;
 static float hall_raw    = 0.0f;
 static float hall_comp   = 0.0f;
 
-static float pos_ref_target = 2.1f;
+static float pos_ref_target = 2.25f;
 static float prev_pos_error = 0.0f;
 static float outer_integral = 0.0f;
 
@@ -67,10 +68,10 @@ static float readACSVoltage() {
 
 static float readHallVoltage() {
     uint32_t sum = 0;
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < 4; i++) {
         sum += analogRead(HALL_PIN);
     }
-    float avgRaw = sum / 16.0f;
+    float avgRaw = sum / 4.0f;
     return (avgRaw / 4095.0f) * 3.3f;
 }
 
@@ -85,15 +86,15 @@ static void writePWM(int d) {
 static void pid_controller_outer() {
     const float dt = OUTER_SAMPLE_US / 1000000.0f;
 
-    hall_raw = readHallVoltage();
-    hall_comp = compensateHall(hall_raw, i_meas);
+    hall_raw  = readHallVoltage();
+    hall_comp = compensateHall(hall_raw, i_filt);
 
     static float filtered_pos = -1.0f;
-    const float ALPHA = 0.85f;
+    const float ALPHA = 0.5f;
     if (filtered_pos < 0.0f) {
         filtered_pos = hall_comp;
     }
-    filtered_pos = (ALPHA * hall_comp) + ((1.0f - ALPHA) * filtered_pos);
+    filtered_pos   = (ALPHA * hall_comp) + ((1.0f - ALPHA) * filtered_pos);
     outer_pos_meas = filtered_pos;
 
     static float deriv_filtered = -1.0f;
@@ -103,7 +104,7 @@ static void pid_controller_outer() {
     }
     deriv_filtered = (ALPHA_D * hall_comp) + ((1.0f - ALPHA_D) * deriv_filtered);
 
-    outer_error = outer_pos_meas - pos_ref_target;
+    outer_error = pos_ref_target - outer_pos_meas;
 
     static bool first_run = true;
     if (first_run) {
@@ -113,27 +114,33 @@ static void pid_controller_outer() {
 
     outer_p_term = Kp_outer * outer_error;
 
-    float deriv_error = deriv_filtered - pos_ref_target;
+    float deriv_error = pos_ref_target - deriv_filtered;
     outer_d_term = Kd_outer * (deriv_error - prev_pos_error) / dt;
     prev_pos_error = deriv_error;
 
-    float potential_i = outer_p_term + (Ki_outer * outer_integral) + outer_d_term + feed_forward;
+    float desired_i = outer_p_term + (Ki_outer * outer_integral) + outer_d_term + feed_forward;
 
-    if (!((potential_i >= MAX_CURRENT && outer_error > 0.0f) ||
-          (potential_i <= MIN_CURRENT && outer_error < 0.0f))) {
+    // anti-windup: only integrate if output is not saturated in the same direction as error
+    bool upper_sat = (desired_i >= MAX_CURRENT && outer_error > 0.0f);
+    bool lower_sat = (desired_i <= MIN_CURRENT && outer_error < 0.0f);
+    if (!upper_sat && !lower_sat) {
         outer_integral += outer_error * dt;
     }
 
+    // clamp integrator to prevent excessive windup
+    outer_integral = constrain(outer_integral, -MAX_CURRENT / (Ki_outer > 0 ? Ki_outer : 1.0f),
+                                                MAX_CURRENT / (Ki_outer > 0 ? Ki_outer : 1.0f));
+
     outer_i_term = Ki_outer * outer_integral;
-    float desired_i = outer_p_term + outer_i_term + outer_d_term + feed_forward;
-    i_ref = constrain(desired_i, MIN_CURRENT, MAX_CURRENT);
+    desired_i    = outer_p_term + outer_i_term + outer_d_term + feed_forward;
+    i_ref        = constrain(desired_i, MIN_CURRENT, MAX_CURRENT);
 }
 
 static int pi_controller_inner(float i, float i_ref_val) {
     const float dt = CURRENT_SAMPLE_US / 1000000.0f;
-    float error = i_ref_val - i;
+    float error   = i_ref_val - i;
 
-    inner_p_term = Kp_inner * error;
+    inner_p_term      = Kp_inner * error;
     float potential_u = inner_p_term + (Ki_inner * inner_integral_i);
 
     if (!((potential_u >= 255.0f && error > 0.0f) ||
@@ -142,13 +149,14 @@ static int pi_controller_inner(float i, float i_ref_val) {
     }
 
     inner_i_term = Ki_inner * inner_integral_i;
-    float u = inner_p_term + inner_i_term;
+    float u      = inner_p_term + inner_i_term;
 
     return (int)constrain(u, 0.0f, 255.0f);
 }
 
 static void resetControllerState() {
     i_ref  = 0.0f;
+    i_filt = 0.0f;
     duty   = 0;
     i_meas = 0.0f;
 
@@ -207,7 +215,7 @@ void setup() {
 
     Serial.println("CONTROL ENABLED.");
     Serial.println("Commands: P<val>=Kp, I<val>=Ki, D<val>=Kd, R<val>=target, F<val>=feedforward");
-    Serial.println("Examples: P8.0  I5.0  D0.0  R2.19  F0.40");
+    Serial.println("Examples: P0.01  I0.01  D0.0  R2.2  F0.10");
 }
 
 void loop() {
@@ -227,7 +235,12 @@ void loop() {
         currentTimer = now;
 
         float v_sensor = readACSVoltage();
-        i_meas = v_sensor / 4.0f;
+        float i_raw    = v_sensor / 4.0f;
+
+        // low-pass filter to suppress ADC saturation spikes
+        const float ALPHA_I = 0.3f;
+        i_filt = (ALPHA_I * i_raw) + ((1.0f - ALPHA_I) * i_filt);
+        i_meas = constrain(i_filt, 0.0f, 0.825f);
 
         duty = pi_controller_inner(i_meas, i_ref);
 
@@ -283,6 +296,7 @@ void loop() {
         Serial.print(" | HallCmp:"); Serial.print(hall_comp,     3); Serial.print(",");
         Serial.print(" | Err:");     Serial.print(outer_error,   3); Serial.print(",");
         Serial.print(" | oP:");      Serial.print(outer_p_term,  3); Serial.print(",");
+        Serial.print(" | oI:");      Serial.print(outer_i_term,  3); Serial.print(",");
         Serial.print(" | iRef:");    Serial.print(i_ref,         3); Serial.print(",");
         Serial.print(" | iMs:");     Serial.print(i_meas,        3); Serial.print(",");
         Serial.print(" | FF:");      Serial.print(feed_forward,  3); Serial.print(",");
